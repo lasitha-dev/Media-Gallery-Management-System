@@ -23,11 +23,31 @@ router.post('/reset-password', resetPassword);
 
 // Google OAuth routes
 router.get('/google',
-  passport.authenticate('google', { scope: ['profile', 'email'] })
+  passport.authenticate('google', { 
+    scope: ['profile', 'email']
+  })
 );
 
 router.get('/google/callback',
-  passport.authenticate('google', { session: false }),
+  (req, res, next) => {
+    passport.authenticate('google', {
+      session: false,
+      failureRedirect: 'http://localhost:5173/login?error=true'
+    })(req, res, (err) => {
+      if (err) {
+        console.error('Passport authentication error:', err);
+        return res.redirect('http://localhost:5173/login?error=true');
+      }
+      next();
+    });
+  },
+  (err, req, res, next) => {
+    if (err) {
+      console.error('Error in Google callback:', err);
+      return res.redirect('http://localhost:5173/login?error=true');
+    }
+    next();
+  },
   googleCallback
 );
 

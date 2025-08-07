@@ -15,15 +15,20 @@ import { transporter } from './utils/otp.js';
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: 'http://localhost:5173',
+  credentials: true
+}));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(passport.initialize());
 
 // Google OAuth Strategy
 passport.use(new GoogleStrategy({
     clientID: process.env.GOOGLE_CLIENT_ID,
     clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-    callbackURL: "/api/auth/google/callback"
+    callbackURL: "http://localhost:5000/api/auth/google/callback",
+    proxy: true
   },
   function(accessToken, refreshToken, profile, done) {
     done(null, profile);

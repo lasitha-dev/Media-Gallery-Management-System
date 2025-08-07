@@ -248,8 +248,25 @@ export const resetPassword = async (req, res) => {
 // Google OAuth callback
 export const googleCallback = async (req, res) => {
   try {
+    console.log('Google callback received:', {
+      user: req.user,
+      headers: req.headers,
+      session: req.session
+    });
+
     // Get user information from Google OAuth
-    const { id, email, displayName } = req.user;
+    if (!req.user) {
+      console.error('No user data received from Google OAuth');
+      throw new Error('Authentication failed');
+    }
+
+    const { id, emails, displayName } = req.user;
+    const email = emails?.[0]?.value;
+
+    if (!email) {
+      console.error('No email received from Google OAuth');
+      throw new Error('Email not provided');
+    }
 
     // Check if user exists
     let user = await User.findOne({ email });
@@ -275,8 +292,8 @@ export const googleCallback = async (req, res) => {
     const token = user.getSignedJwtToken();
 
     // Redirect to frontend with token
-    res.redirect(`${process.env.CLIENT_URL}/auth/callback?token=${token}`);
+    res.redirect(`http://localhost:5173/auth/callback?token=${token}`);
   } catch (error) {
-    res.redirect(`${process.env.CLIENT_URL}/auth/callback?error=true`);
+    res.redirect(`http://localhost:5173/auth/callback?error=true`);
   }
 };
