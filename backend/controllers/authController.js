@@ -1,6 +1,7 @@
 import User from '../models/User.js';
 import { generateOTP, sendOTP, verifyOTP as verifyOTPUtil } from '../utils/otp.js';
 import crypto from 'crypto';
+import jwt from 'jsonwebtoken';
 
 // Register user
 export const register = async (req, res) => {
@@ -45,10 +46,10 @@ export const register = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Registration successful. Please verify your email.',
-      debug: { otp } // WARNING: Remove this in production. Only for testing!
+      message: 'Registration successful. Please verify your email.'
     });
   } catch (error) {
+    console.error('Registration error:', error);
     res.status(500).json({
       success: false,
       message: 'Error in registration'
@@ -79,22 +80,25 @@ export const login = async (req, res) => {
       });
     }
 
-    // Check if user is verified
-    if (!user.verified) {
-      return res.status(401).json({
-        success: false,
-        message: 'Please verify your email first'
-      });
-    }
-
-    // Create token
-    const token = user.getSignedJwtToken();
+    // Generate token
+    const token = jwt.sign(
+      { id: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
 
     res.status(200).json({
       success: true,
-      token
+      token,
+      user: {
+        id: user._id,
+        name: user.name,
+        email: user.email,
+        role: user.role
+      }
     });
   } catch (error) {
+    console.error('Login error:', error);
     res.status(500).json({
       success: false,
       message: 'Error in login'
@@ -102,11 +106,58 @@ export const login = async (req, res) => {
   }
 };
 
-// Verify OTP
+// Handle Google OAuth callback
+export const googleCallback = async (req, res) => {
+  try {
+    if (!req.user) {
+      console.error('No user data received from Google OAuth');
+      return res.redirect('http://localhost:5173/login?error=true');
+    }
+
+    let currentUser;
+    const existingUser = await User.findOne({ email: req.user._json.email });
+    
+    if (!existingUser) {
+      // Create new user if doesn't exist
+      currentUser = await User.create({
+        name: req.user.displayName,
+        email: req.user._json.email,
+        emailVerified: req.user._json.email_verified,
+        googleId: req.user.id,
+        avatar: req.user._json.picture,
+        verified: true
+      });
+    } else {
+      // Update existing user's Google-related info
+      existingUser.googleId = req.user.id;
+      existingUser.avatar = req.user._json.picture;
+      existingUser.emailVerified = true;
+      existingUser.verified = true;
+      await existingUser.save();
+      currentUser = existingUser;
+    }
+
+    // Generate JWT token
+    const authToken = jwt.sign(
+      { id: currentUser._id },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    // Redirect to frontend with token
+    return res.redirect(`http://localhost:5173/auth/callback?token=${authToken}`);
+  } catch (error) {
+    console.error('Error in Google callback:', error);
+    return res.redirect('http://localhost:5173/login?error=true');
+  }
+};
+
+// Verify User OTP
 export const verifyUserOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
 
+    // Get user
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).json({
@@ -115,25 +166,49 @@ export const verifyUserOTP = async (req, res) => {
       });
     }
 
-    if (verifyOTPUtil(user.otp.code, otp, user.otp.expiresAt)) {
-      user.verified = true;
-      user.otp = undefined;
-      await user.save();
-
-      const token = user.getSignedJwtToken();
-
-      res.status(200).json({
-        success: true,
-        message: 'Email verified successfully',
-        token
-      });
-    } else {
-      res.status(400).json({
+    // Verify OTP
+    if (!user.otp || !user.otp.code || !user.otp.expiresAt) {
+      return res.status(400).json({
         success: false,
-        message: 'Invalid or expired OTP'
+        message: 'No OTP found. Please request a new one.'
       });
     }
+
+    // Check if OTP is expired
+    if (Date.now() > user.otp.expiresAt) {
+      return res.status(400).json({
+        success: false,
+        message: 'OTP has expired. Please request a new one.'
+      });
+    }
+
+    // Check if OTP matches
+    if (otp !== user.otp.code) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid OTP'
+      });
+    }
+
+    // Mark user as verified
+    user.verified = true;
+    user.otp = undefined;
+    await user.save();
+
+    // Generate token
+    const token = jwt.sign(
+      { id: user._id },
+      process.env.JWT_SECRET,
+      { expiresIn: '30d' }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: 'Email verified successfully',
+      token
+    });
   } catch (error) {
+    console.error('OTP verification error:', error);
     res.status(500).json({
       success: false,
       message: 'Error in OTP verification'
@@ -146,6 +221,7 @@ export const resendOTP = async (req, res) => {
   try {
     const { email } = req.body;
 
+    // Get user
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).json({
@@ -154,20 +230,30 @@ export const resendOTP = async (req, res) => {
       });
     }
 
+    // Generate new OTP
     const otp = generateOTP();
     user.otp = {
       code: otp,
-      expiresAt: Date.now() + 10 * 60 * 1000
+      expiresAt: Date.now() + 10 * 60 * 1000 // 10 minutes
     };
     await user.save();
 
-    await sendOTP(email, otp);
+    // Send OTP
+    const emailSent = await sendOTP(email, otp);
+    
+    if (!emailSent) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send OTP. Please try again.'
+      });
+    }
 
     res.status(200).json({
       success: true,
-      message: 'OTP resent successfully'
+      message: 'OTP sent successfully'
     });
   } catch (error) {
+    console.error('Resend OTP error:', error);
     res.status(500).json({
       success: false,
       message: 'Error in resending OTP'
@@ -175,11 +261,12 @@ export const resendOTP = async (req, res) => {
   }
 };
 
-// Forgot password
+// Forgot Password
 export const forgotPassword = async (req, res) => {
   try {
     const { email } = req.body;
 
+    // Get user
     const user = await User.findOne({ email });
     if (!user) {
       return res.status(404).json({
@@ -188,20 +275,36 @@ export const forgotPassword = async (req, res) => {
       });
     }
 
-    const otp = generateOTP();
-    user.otp = {
-      code: otp,
-      expiresAt: Date.now() + 10 * 60 * 1000
-    };
+    // Generate reset token
+    const resetToken = crypto.randomBytes(20).toString('hex');
+    user.resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(resetToken)
+      .digest('hex');
+    user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // 10 minutes
     await user.save();
 
-    await sendOTP(email, otp, 'reset');
+    // Send reset password email
+    const resetUrl = `http://localhost:5173/reset-password?token=${resetToken}`;
+    const emailSent = await sendPasswordResetEmail(email, resetUrl);
+
+    if (!emailSent) {
+      user.resetPasswordToken = undefined;
+      user.resetPasswordExpire = undefined;
+      await user.save();
+
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send reset password email'
+      });
+    }
 
     res.status(200).json({
       success: true,
-      message: 'Password reset OTP sent successfully'
+      message: 'Password reset email sent'
     });
   } catch (error) {
+    console.error('Forgot password error:', error);
     res.status(500).json({
       success: false,
       message: 'Error in forgot password'
@@ -209,91 +312,45 @@ export const forgotPassword = async (req, res) => {
   }
 };
 
-// Reset password
+// Reset Password
 export const resetPassword = async (req, res) => {
   try {
-    const { email, otp, newPassword } = req.body;
+    const { token, password } = req.body;
 
-    const user = await User.findOne({ email });
+    // Get hashed token
+    const resetPasswordToken = crypto
+      .createHash('sha256')
+      .update(token)
+      .digest('hex');
+
+    // Get user
+    const user = await User.findOne({
+      resetPasswordToken,
+      resetPasswordExpire: { $gt: Date.now() }
+    });
+
     if (!user) {
-      return res.status(404).json({
+      return res.status(400).json({
         success: false,
-        message: 'User not found'
+        message: 'Invalid or expired reset token'
       });
     }
 
-    if (verifyOTP(user.otp.code, otp, user.otp.expiresAt)) {
-      user.password = newPassword;
-      user.otp = undefined;
-      await user.save();
+    // Set new password
+    user.password = password;
+    user.resetPasswordToken = undefined;
+    user.resetPasswordExpire = undefined;
+    await user.save();
 
-      res.status(200).json({
-        success: true,
-        message: 'Password reset successful'
-      });
-    } else {
-      res.status(400).json({
-        success: false,
-        message: 'Invalid or expired OTP'
-      });
-    }
+    res.status(200).json({
+      success: true,
+      message: 'Password reset successful'
+    });
   } catch (error) {
+    console.error('Reset password error:', error);
     res.status(500).json({
       success: false,
-      message: 'Error in password reset'
+      message: 'Error in reset password'
     });
-  }
-};
-
-// Google OAuth callback
-export const googleCallback = async (req, res) => {
-  try {
-    console.log('Google callback received:', {
-      user: req.user,
-      headers: req.headers,
-      session: req.session
-    });
-
-    // Get user information from Google OAuth
-    if (!req.user) {
-      console.error('No user data received from Google OAuth');
-      throw new Error('Authentication failed');
-    }
-
-    const { id, emails, displayName } = req.user;
-    const email = emails?.[0]?.value;
-
-    if (!email) {
-      console.error('No email received from Google OAuth');
-      throw new Error('Email not provided');
-    }
-
-    // Check if user exists
-    let user = await User.findOne({ email });
-
-    if (!user) {
-      // Create new user if doesn't exist
-      user = await User.create({
-        name: displayName,
-        email,
-        googleId: id,
-        verified: true, // Google OAuth users are automatically verified
-        password: crypto.randomBytes(20).toString('hex') // Random password for Google users
-      });
-    } else {
-      // Update existing user's Google ID if not set
-      if (!user.googleId) {
-        user.googleId = id;
-        await user.save();
-      }
-    }
-
-    // Create token
-    const token = user.getSignedJwtToken();
-
-    // Redirect to frontend with token
-    res.redirect(`http://localhost:5173/auth/callback?token=${token}`);
-  } catch (error) {
-    res.redirect(`http://localhost:5173/auth/callback?error=true`);
   }
 };

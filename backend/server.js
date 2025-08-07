@@ -10,6 +10,7 @@ dotenv.config();
 
 // Import routes and utilities
 import authRoutes from './routes/authRoutes.js';
+import mediaRoutes from './routes/mediaRoutes.js';
 import { transporter } from './utils/otp.js';
 
 const app = express();
@@ -46,6 +47,7 @@ mongoose.connect(process.env.MONGODB_URI)
 
 // Routes
 app.use('/api/auth', authRoutes);
+app.use('/api/media', mediaRoutes);
 
 // Basic route
 app.get('/', (req, res) => {
