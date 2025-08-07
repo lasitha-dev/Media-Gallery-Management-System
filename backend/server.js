@@ -5,11 +5,12 @@ import mongoose from 'mongoose';
 import passport from 'passport';
 import { Strategy as GoogleStrategy } from 'passport-google-oauth20';
 
-// Import routes
-import authRoutes from './routes/authRoutes.js';
-
-// Load environment variables
+// Load environment variables first
 dotenv.config();
+
+// Import routes and utilities
+import authRoutes from './routes/authRoutes.js';
+import { transporter } from './utils/otp.js';
 
 const app = express();
 
@@ -46,8 +47,34 @@ app.get('/', (req, res) => {
   res.json({ message: 'Welcome to Media Gallery API' });
 });
 
-// Start server
+// Verify email configuration
+const verifyEmailConfig = async () => {
+  try {
+    await transporter.verify();
+    console.log('Email configuration is valid');
+    return true;
+  } catch (error) {
+    console.error('Email configuration error:', error);
+    console.log('Email Settings:', {
+      user: process.env.GMAIL_USER,
+      pass_length: process.env.GMAIL_PASS ? process.env.GMAIL_PASS.length : 0
+    });
+    return false;
+  }
+};
+
+// Start server with email verification
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-});
+const startServer = async () => {
+  // Check email configuration but don't stop server if it fails
+  const emailConfigValid = await verifyEmailConfig();
+  if (!emailConfigValid) {
+    console.warn('Warning: Email service is not configured correctly. OTP features may not work.');
+  }
+
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+};
+
+startServer();

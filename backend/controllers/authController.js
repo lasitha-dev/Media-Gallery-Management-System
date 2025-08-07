@@ -1,5 +1,5 @@
 import User from '../models/User.js';
-import { generateOTP, sendOTP, verifyOTP } from '../utils/otp.js';
+import { generateOTP, sendOTP, verifyOTP as verifyOTPUtil } from '../utils/otp.js';
 import crypto from 'crypto';
 
 // Register user
@@ -32,11 +32,21 @@ export const register = async (req, res) => {
     await user.save();
 
     // Send OTP
-    await sendOTP(email, otp);
+    const emailSent = await sendOTP(email, otp);
+    
+    if (!emailSent) {
+      // If email fails, delete the user and return error
+      await User.findByIdAndDelete(user._id);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to send verification email. Please try again.'
+      });
+    }
 
     res.status(201).json({
       success: true,
-      message: 'Registration successful. Please verify your email.'
+      message: 'Registration successful. Please verify your email.',
+      debug: { otp } // WARNING: Remove this in production. Only for testing!
     });
   } catch (error) {
     res.status(500).json({
@@ -93,7 +103,7 @@ export const login = async (req, res) => {
 };
 
 // Verify OTP
-export const verifyOTP = async (req, res) => {
+export const verifyUserOTP = async (req, res) => {
   try {
     const { email, otp } = req.body;
 
@@ -105,7 +115,7 @@ export const verifyOTP = async (req, res) => {
       });
     }
 
-    if (verifyOTP(user.otp.code, otp, user.otp.expiresAt)) {
+    if (verifyOTPUtil(user.otp.code, otp, user.otp.expiresAt)) {
       user.verified = true;
       user.otp = undefined;
       await user.save();
